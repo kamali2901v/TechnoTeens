@@ -26,6 +26,8 @@ GRADING_RULES = load_rules("grading_rules.json")
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 init_db()
+from auth import register_officer
+register_officer("officer1", "password123", "Test Officer")
 
 if "logged_in_officer" not in st.session_state:
     st.session_state.logged_in_officer = None
