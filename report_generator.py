@@ -8,10 +8,12 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.lib.units import inch
 from reportlab.lib.enums import TA_CENTER
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, HRFlowable, Image
+)
 from datetime import datetime
 
-from db import get_batch_summary, get_all_batches
+from db import get_batch_summary, get_all_batches, get_batch_samples
 
 BROWN = colors.HexColor("#8B4513")
 LIGHT_TAN = colors.HexColor("#F5DEB3")
@@ -32,7 +34,7 @@ def calculate_grade(healthy_pct):
         return "URS (Under Relaxed Specifications)", colors.HexColor("#FFF4E0"), colors.HexColor("#B9770E")
 
 
-def generate_batch_report(batch_id, output_path=None):
+def generate_batch_report(batch_id, output_path=None, officer_name=None, officer_id=None):
     if output_path is None:
         output_path = f"reports/{batch_id}_report.pdf"
     os.makedirs("reports", exist_ok=True)
@@ -74,9 +76,13 @@ def generate_batch_report(batch_id, output_path=None):
         "GradeStyle", parent=styles["Normal"], fontSize=20,
         leading=24, alignment=TA_CENTER, fontName="Helvetica-Bold"
     )
+    evidence_caption_style = ParagraphStyle(
+        "EvidenceCaption", parent=styles["Normal"], fontSize=8,
+        textColor=DARK_GREY, alignment=TA_CENTER, leading=10.5
+    )
 
     # --- Header ---
-    story.append(Paragraph(" AgroNex — OnionGrade AI", title_style))
+    story.append(Paragraph(" AgroNex ", title_style))
     story.append(Paragraph("Onion Quality Assessment Report", subtitle_style))
     story.append(HRFlowable(width="100%", thickness=1, color=LIGHT_TAN, spaceAfter=10))
 
@@ -87,6 +93,7 @@ def generate_batch_report(batch_id, output_path=None):
             ["Supplier", batch_info["supplier_name"] or "-", "Variety", batch_info["onion_variety"] or "-"],
             ["Centre", batch_info["procurement_centre"] or "-", "Quantity",
              f"{batch_info['quantity_received']} {batch_info['unit']}"],
+            ["Inspector", officer_name or "-", "Officer ID", officer_id or "-"],
         ]
         batch_table = Table(batch_data, colWidths=[65, 175, 65, 175])
         batch_table.setStyle(TableStyle([
@@ -160,46 +167,77 @@ def generate_batch_report(batch_id, output_path=None):
     story.append(Spacer(1, 14))
 
     # --- Size check ---
-    story.append(Paragraph("Size Check — Manual Inspection", heading_style))
-    size_data = [
-        ["Normal", "Undersized", "Not Checked"],
-        [str(summary["size_normal"]), str(summary["size_undersized"]), str(summary["size_not_assessed"])],
-    ]
-    size_table = Table(size_data, colWidths=[160, 160, 160])
-    size_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EFEFEF")),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D9D9D9")),
-        ("FONTSIZE", (0, 0), (-1, -1), 9.5),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-    ]))
-    story.append(size_table)
-    story.append(Spacer(1, 12))
+    
 
-    # --- Quality assurance ---
-    story.append(Paragraph("Quality Assurance", heading_style))
-    story.append(Paragraph(
-        f"Every one of the {total} samples was screened by AI and reviewed by a trained "
-        f"inspector ({summary['human_corrections']} adjusted after closer inspection), "
-        f"combining fast AI-assisted screening with human-verified accuracy for a reliable, "
-        f"auditable result.",
-        body_style
-    ))
-    story.append(Spacer(1, 10))
+    # --- Sample Evidence (actual photos with AI result, as proof) ---
+    samples = get_batch_samples(batch_id)
+    if samples:
+        story.append(Paragraph("Sample Evidence", heading_style))
+        story.append(Paragraph(
+            "Each sample below shows the actual photo captured during inspection, "
+            "with the AI prediction and confidence recorded as supporting evidence.",
+            note_style
+        ))
+        story.append(Spacer(1, 6))
+
+        thumb_size = 1.3 * inch
+        cell_width = 160
+        row_cells = []
+        grid_rows = []
+
+        for sample in samples:
+            final = (sample["human_decision"] or sample["ai_prediction"] or "").upper()
+            conf_pct = f"{sample['ai_confidence']*100:.0f}%" if sample["ai_confidence"] is not None else "-"
+            caption_text = f"{sample['sample_id']}<br/><b>{final}</b> ({conf_pct})"
+
+            img_path = sample["image_path"]
+            if img_path and os.path.isfile(img_path):
+                try:
+                    img_flowable = Image(img_path, width=thumb_size, height=thumb_size)
+                except Exception:
+                    img_flowable = Paragraph("(image unavailable)", evidence_caption_style)
+            else:
+                img_flowable = Paragraph("(image unavailable)", evidence_caption_style)
+
+            cell = Table(
+                [[img_flowable], [Paragraph(caption_text, evidence_caption_style)]],
+                colWidths=[cell_width]
+            )
+            cell.setStyle(TableStyle([
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            row_cells.append(cell)
+
+            if len(row_cells) == 3:
+                grid_rows.append(row_cells)
+                row_cells = []
+
+        if row_cells:
+            while len(row_cells) < 3:
+                row_cells.append(Paragraph("", evidence_caption_style))
+            grid_rows.append(row_cells)
+
+        evidence_table = Table(grid_rows, colWidths=[cell_width, cell_width, cell_width])
+        evidence_table.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(evidence_table)
+        story.append(Spacer(1, 12))
 
     # --- Footer ---
     story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#D9D9D9"), spaceAfter=6))
     story.append(Paragraph(
         "Grading shown is provisional pending official AGMARK/NAFED verification. "
         "URS = Under Relaxed Specifications (NAFED procurement category below Grade A). ",
-        
         note_style
     ))
     story.append(Spacer(1, 4))
     story.append(Paragraph(
-        f"Report generated: {datetime.now().strftime('%Y-%m-%d %H:%M')} · AgroNex OnionGrade AI",
+        f"Report generated: {datetime.now().strftime('%Y-%m-%d %H:%M')} · AgroNex  AI",
         note_style
     ))
 

@@ -6,9 +6,9 @@
   },
   "grades": {
     "healthy_high": "Grade A",
-    "healthy_review": "Grade A (Pending Manual Review)",
+    "healthy_review": "Grade A",
     "defective_high": "URS (Under Relaxed Specification)",
-    "defective_review": "URS (Pending Manual Review)",
+    "defective_review": "URS",
     "uncertain": "Manual Inspection Required"
   }
 }

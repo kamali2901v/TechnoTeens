@@ -62,6 +62,28 @@ def init_db():
         )
     """)
 
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS officers (
+            officer_id TEXT PRIMARY KEY,
+            password_hash TEXT,
+            name TEXT
+        )
+    """)
+
+    migrations = [
+        "ALTER TABLE batches ADD COLUMN status TEXT DEFAULT 'Pending'",
+        "ALTER TABLE batches ADD COLUMN farmer_id TEXT",
+        "ALTER TABLE samples ADD COLUMN mechanical_damage TEXT DEFAULT 'Not Assessed'",
+        "ALTER TABLE samples ADD COLUMN final_grade TEXT",
+        "ALTER TABLE samples ADD COLUMN grade_reason TEXT",
+        "ALTER TABLE samples ADD COLUMN confidence_level TEXT",
+    ]
+    for sql in migrations:
+        try:
+            c.execute(sql)
+        except sqlite3.OperationalError:
+            pass
+
     conn.commit()
     conn.close()
 
@@ -116,7 +138,7 @@ def create_batch(supplier_name, procurement_centre, onion_variety,
     return batch_id
 
 
-def create_sample(batch_id, image_path, ai_prediction, ai_confidence, grade):
+def create_sample(batch_id, image_path, ai_prediction, ai_confidence, grade, confidence_level=None):
     sample_id = _next_id("ON", "samples", "sample_id")
     conn = get_connection()
     c = conn.cursor()
@@ -124,11 +146,11 @@ def create_sample(batch_id, image_path, ai_prediction, ai_confidence, grade):
         INSERT INTO samples
         (sample_id, batch_id, timestamp, image_path, ai_prediction,
          ai_confidence, grade, human_decision, human_agreed,
-         correction_reason, defect_tags, size_assessment)
-        VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 'Not Assessed')
+         correction_reason, defect_tags, size_assessment, confidence_level)
+        VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 'Not Assessed', ?)
     """, (
         sample_id, batch_id, datetime.now().isoformat(), image_path,
-        ai_prediction, ai_confidence, grade
+        ai_prediction, ai_confidence, grade, confidence_level
     ))
     conn.commit()
     conn.close()
@@ -227,7 +249,30 @@ def get_batch_samples(batch_id):
     rows = c.fetchall()
     conn.close()
     return [dict(r) for r in rows]
-
+def search_samples(query="", class_filter="All"):
+    conn = get_connection()
+    c = conn.cursor()
+    sql = """
+        SELECT s.*, b.supplier_name, b.procurement_centre
+        FROM samples s
+        LEFT JOIN batches b ON s.batch_id = b.batch_id
+    """
+    conditions = []
+    params = []
+    if query:
+        like = f"%{query}%"
+        conditions.append("(s.sample_id LIKE ? OR s.batch_id LIKE ? OR b.supplier_name LIKE ?)")
+        params += [like, like, like]
+    if class_filter and class_filter != "All":
+        conditions.append("(COALESCE(s.human_decision, s.ai_prediction) = ?)")
+        params.append(class_filter)
+    if conditions:
+        sql += " WHERE " + " AND ".join(conditions)
+    sql += " ORDER BY s.timestamp DESC"
+    c.execute(sql, params)
+    rows = c.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 if __name__ == "__main__":
     init_db()

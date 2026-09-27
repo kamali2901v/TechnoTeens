@@ -7,9 +7,11 @@ from PIL import Image
 import os
 from datetime import datetime
 
+
 from db import (
     init_db, create_batch, create_sample, record_human_decision,
-    record_size_assessment, get_batch_summary, get_all_batches, get_batch_samples
+    record_size_assessment, get_batch_summary, get_all_batches, get_batch_samples,
+    search_samples
 )
 from grading import load_rules, apply_grading
 from translations import t
@@ -38,6 +40,10 @@ lang = st.session_state.lang
 
 st.set_page_config(page_title="AgroNex", page_icon="🧅", layout="wide")
 
+st.markdown("""
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+""", unsafe_allow_html=True)
+
 # ---------------------------------------------------------------------------
 # Styling
 # ---------------------------------------------------------------------------
@@ -47,17 +53,29 @@ st.markdown("""
         background-color: #FAF9F6;
     }
     section[data-testid="stSidebar"] {
-        background-color: #1B3A2B;
+        background-color: #172554;
     }
     section[data-testid="stSidebar"] * {
         color: #F1EFE6 !important;
     }
-    section[data-testid="stSidebar"] div[role="radiogroup"] label {
-        padding: 6px 4px;
+       section[data-testid="stSidebar"] div[role="radiogroup"] label {
+        padding: 8px 10px;
         border-radius: 8px;
+        margin-bottom: 2px;
     }
     section[data-testid="stSidebar"] div[role="radiogroup"] label:hover {
-        background-color: rgba(255,255,255,0.08);
+        background-color: rgba(255,255,255,0.10) !important;
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) {
+        background-color: #C1502E !important;
+    }
+    section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) p,
+    section[data-testid="stSidebar"] div[role="radiogroup"] label:has(input:checked) div {
+        color: white !important;
+        font-weight: 700 !important;
+    }
+    section[data-testid="stSidebar"] input[type="radio"] {
+        accent-color: #C1502E !important;
     }
 
     h1, h2, h3 {
@@ -123,12 +141,77 @@ st.markdown("""
         margin-bottom: 10px;
     }
 
+    .stAlert[data-baseweb="notification"] {
+        background-color: #F5E9DC !important;
+        border: 1px solid #8B4513 !important;
+    }
+    .stAlert[data-baseweb="notification"] p {
+        color: #5C4033 !important;
+    }
+
+    div[data-testid="stNotificationContentSuccess"] {
+        background-color: #F5E9DC !important;
+    }
+    div[data-testid="stNotificationContentSuccess"] p {
+        color: #5C4033 !important;
+    }
+
     hr {
         margin: 2rem 0 !important;
         border-color: #E3E8DE !important;
     }
+
+    /* ---------- Mobile responsiveness ---------- */
+    @media (max-width: 600px) {
+        div.block-container {
+            padding-left: 1rem !important;
+            padding-right: 1rem !important;
+            padding-top: 1rem !important;
+        }
+
+        h1 {
+            font-size: 1.5rem !important;
+        }
+        h2, h3 {
+            font-size: 1.2rem !important;
+        }
+
+        [data-testid="stMetricValue"] {
+            font-size: 1.1rem !important;
+        }
+        [data-testid="stMetric"] {
+            padding: 10px 8px !important;
+        }
+
+        div.stButton > button {
+            width: 100% !important;
+            padding: 0.7rem 1rem !important;
+            font-size: 0.95rem !important;
+        }
+
+        div[data-testid="stExpander"],
+        div[data-testid="stVerticalBlockBorderWrapper"] {
+            padding: 10px !important;
+        }
+
+        div[data-testid="column"] {
+            min-width: 100% !important;
+            flex: 1 1 100% !important;
+        }
+
+        .agronex-badge {
+            font-size: 0.7rem !important;
+            padding: 3px 10px !important;
+        }
+
+        img {
+            max-width: 100% !important;
+            height: auto !important;
+        }
+    }
 </style>
 """, unsafe_allow_html=True)
+
 
 # ---------------------------------------------------------------------------
 # Login gate
@@ -137,19 +220,19 @@ if st.session_state.logged_in_officer is None:
     col1, col2, col3 = st.columns([1, 1.2, 1])
     with col2:
         st.markdown("<br><br>", unsafe_allow_html=True)
-        st.markdown("### 🧅 AgroNex")
-        st.caption("AI-assisted onion procurement inspection")
+        st.markdown(f"### {t('app_title', lang)}")
+        st.caption(t("login_subtitle", lang))
         with st.container(border=True):
-            st.subheader("Officer Login")
-            officer_id = st.text_input("Officer ID")
-            password = st.text_input("Password", type="password")
-            if st.button("Login", use_container_width=True):
+            st.subheader(t("login_title", lang))
+            officer_id = st.text_input(t("officer_id_label", lang))
+            password = st.text_input(t("password_label", lang), type="password")
+            if st.button(t("login_btn", lang), use_container_width=True):
                 name = verify_login(officer_id, password)
                 if name:
                     st.session_state.logged_in_officer = {"id": officer_id, "name": name}
                     st.rerun()
                 else:
-                    st.error("Invalid Officer ID or password.")
+                    st.error(t("invalid_login", lang))
     st.stop()
 
 # ---------------------------------------------------------------------------
@@ -169,29 +252,39 @@ class_key_map = {"healthy": "healthy", "damaged": "damaged", "rotten": "rotten"}
 # Sidebar: branding, nav, language, logout
 # ---------------------------------------------------------------------------
 with st.sidebar:
-    st.markdown("## 🧅 AgroNex")
-    st.caption("AI-Powered Onion Quality Assessment")
+    st.markdown(f"## {t('app_title', lang)}")
+    st.caption(t("app_subtitle", lang))
     st.markdown(f"**{st.session_state.logged_in_officer['name']}**")
     st.markdown("<hr style='margin:12px 0; border-color: rgba(255,255,255,0.15);'>", unsafe_allow_html=True)
 
+    nav_labels = {
+        "Dashboard": t("nav_dashboard", lang),
+        "New Inspection": t("nav_new_inspection", lang),
+        "Batch History": t("nav_batch_history", lang),
+        "Search": t("nav_search", lang),
+        "Reports": t("nav_reports", lang),
+        "Settings": t("nav_settings", lang),
+    }
+    nav_keys = list(nav_labels.keys())
     st.session_state.page = st.radio(
         "Navigate",
-        ["Dashboard", "New Inspection", "Batch History", "Reports", "Settings"],
-        index=["Dashboard", "New Inspection", "Batch History", "Reports", "Settings"].index(st.session_state.page),
+        nav_keys,
+        index=nav_keys.index(st.session_state.page),
+        format_func=lambda k: nav_labels[k],
         label_visibility="collapsed",
     )
 
     st.markdown("<hr style='margin:12px 0; border-color: rgba(255,255,255,0.15);'>", unsafe_allow_html=True)
     lang_display = {"English": "en", "தமிழ் (Tamil)": "ta", "हिन्दी (Hindi)": "hi"}
     lang_choice = st.selectbox(
-        "Language",
+        t("language_selector", lang),
         list(lang_display.keys()),
         index=list(lang_display.values()).index(st.session_state.lang),
     )
     st.session_state.lang = lang_display[lang_choice]
     lang = st.session_state.lang
 
-    if st.button("Logout", use_container_width=True):
+    if st.button(t("logout_btn", lang), use_container_width=True):
         st.session_state.logged_in_officer = None
         st.rerun()
 
@@ -202,16 +295,16 @@ batch_options = [b["batch_id"] for b in all_batches]
 # PAGE: Dashboard
 # ===========================================================================
 if st.session_state.page == "Dashboard":
-    st.markdown('<span class="agronex-badge">DASHBOARD</span>', unsafe_allow_html=True)
-    st.title("Overview")
+    st.markdown(f'<span class="agronex-badge">{t("badge_dashboard", lang)}</span>', unsafe_allow_html=True)
+    st.title(t("dashboard_overview", lang))
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Active Batches", len(all_batches))
+    c1.metric(t("active_batches", lang), len(all_batches))
     total_samples_all = sum(get_batch_summary(b["batch_id"])["total_samples"] for b in all_batches) if all_batches else 0
-    c2.metric("Samples Inspected", total_samples_all)
-    c3.metric("Current Batch", st.session_state.current_batch or "None selected")
+    c2.metric(t("samples_inspected", lang), total_samples_all)
+    c3.metric(t("current_batch", lang), st.session_state.current_batch or t("none_selected", lang))
 
-    st.markdown("### Create a New Batch")
+    st.markdown(f"### {t('create_new_batch_header', lang)}")
     with st.container(border=True):
         col1, col2 = st.columns(2)
         with col1:
@@ -232,7 +325,7 @@ if st.session_state.page == "Dashboard":
             else:
                 st.error(t("supplier_centre_required", lang))
 
-    st.markdown("### Select Active Batch")
+    st.markdown(f"### {t('select_active_batch_header', lang)}")
     if batch_options:
         selected = st.selectbox(
             t("active_batch", lang),
@@ -249,13 +342,13 @@ if st.session_state.page == "Dashboard":
         cc3.metric(t("rotten", lang), f"{summary['rotten']} ({summary['rotten_pct']}%)")
         cc4.metric(t("human_corrections", lang), summary["human_corrections"])
     else:
-        st.info("No batches yet — create one above to get started.")
+        st.info(t("no_batches_create_prompt", lang))
 
 # ===========================================================================
 # PAGE: New Inspection
 # ===========================================================================
 elif st.session_state.page == "New Inspection":
-    st.markdown('<span class="agronex-badge">INSPECTION</span>', unsafe_allow_html=True)
+    st.markdown(f'<span class="agronex-badge">{t("badge_inspection", lang)}</span>', unsafe_allow_html=True)
     st.title(t("inspect_sample", lang))
 
     if not st.session_state.current_batch:
@@ -265,17 +358,16 @@ elif st.session_state.page == "New Inspection":
     st.caption(f"{t('active_batch', lang)}: **{st.session_state.current_batch}**")
 
     with st.container(border=True):
-        tab1, tab3 = st.tabs([t("camera_tab", lang), "📦 Batch Upload"])
+        tab1, tab3 = st.tabs([t("camera_tab", lang), t("batch_upload_tab", lang)])
         img_file = None
         with tab1:
             camera_img = st.camera_input(t("take_photo", lang))
             if camera_img is not None:
                 img_file = camera_img
-        
         with tab3:
-            st.caption("Upload multiple onion photos at once — each is predicted and saved as its own sample.")
+            st.caption(t("batch_upload_caption", lang))
             batch_files = st.file_uploader(
-                "Select multiple images", type=["jpg", "jpeg", "png"],
+                t("select_multiple_images", lang), type=["jpg", "jpeg", "png"],
                 accept_multiple_files=True, key="batch_uploader",
             )
             if batch_files:
@@ -312,7 +404,7 @@ elif st.session_state.page == "New Inspection":
                     progress.empty()
                     st.success(f"Added {len(new_files)} sample(s) to {st.session_state.current_batch}.")
 
-                st.markdown("##### Batch upload results")
+                st.markdown(f"##### {t('batch_upload_results', lang)}")
                 for fname, r in st.session_state[processed_key].items():
                     with st.container(border=True):
                         col_a, col_b, col_c = st.columns([1, 2, 2])
@@ -322,21 +414,19 @@ elif st.session_state.page == "New Inspection":
                             st.write(f"**{t(class_key_map[r['prediction']], lang).upper()}**")
                             st.caption(f"{r['confidence']*100:.1f}% · {r['grade']}")
                         with col_c:
-                            corr = st.selectbox(
+                            st.selectbox(
                                 t("correct_to", lang), CLASS_NAMES,
                                 format_func=lambda c: t(class_key_map[c], lang),
                                 index=CLASS_NAMES.index(r["prediction"]),
                                 key=f"batch_correct_{r['sample_id']}",
                                 label_visibility="collapsed",
                             )
-                            if st.button(t("submit_correction", lang), key=f"batch_correct_btn_{r['sample_id']}"):
-                                record_human_decision(r["sample_id"], corr)
-                                st.success(t("corrected_to", lang) + f" {t(class_key_map[corr], lang)}")
 
-                if st.button("✅ Confirm all AI results as correct", key="confirm_all_batch"):
+                if st.button("Submit All Results", key="submit_all_batch", use_container_width=True):
                     for r in st.session_state[processed_key].values():
-                        record_human_decision(r["sample_id"], r["prediction"])
-                    st.success("All samples in this batch confirmed.")
+                        final_choice = st.session_state.get(f"batch_correct_{r['sample_id']}", r["prediction"])
+                        record_human_decision(r["sample_id"], final_choice)
+                    st.success("All results submitted.")
 
     if img_file is not None:
         col_img, col_result = st.columns([1, 1.3])
@@ -359,7 +449,7 @@ elif st.session_state.page == "New Inspection":
                 st.progress(confidence, text=f"{t('confidence', lang)}: {confidence * 100:.1f}%")
                 st.markdown(f"**Grade:** {grade_info['grade']}")
                 if grade_info["manual_review_required"]:
-                    st.caption("⚠️ Flagged for manual review")
+                    st.caption(t("manual_review_flag", lang))
                 for i, name in enumerate(CLASS_NAMES):
                     st.caption(f"{t(class_key_map[name], lang)}: {probs[i] * 100:.1f}%")
                 if confidence < CONFIDENCE_THRESHOLD:
@@ -382,26 +472,6 @@ elif st.session_state.page == "New Inspection":
 
         sample_id = st.session_state.last_sample_id
 
-        st.markdown(f"#### {t('human_verification', lang)}")
-        st.caption("Both the AI result and your assessment are recorded — your input doesn't erase the AI's original prediction, it's tracked alongside it for transparency.")
-        with st.container(border=True):
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button(t("confirm_ai", lang), key=f"confirm_{sample_id}", use_container_width=True):
-                    record_human_decision(sample_id, predicted_class)
-                    st.success(t("confirmed", lang))
-            with col2:
-                correction = st.selectbox(
-                    t("correct_to", lang), CLASS_NAMES,
-                    format_func=lambda c: t(class_key_map[c], lang),
-                    key=f"correct_select_{sample_id}",
-                )
-                if st.button(t("submit_correction", lang), key=f"correct_btn_{sample_id}", use_container_width=True):
-                    reason = st.session_state.get(f"reason_{sample_id}", "")
-                    record_human_decision(sample_id, correction, correction_reason=reason)
-                    st.success(f"{t('corrected_to', lang)} {t(class_key_map[correction], lang)}.")
-            st.text_input(t("correction_reason", lang), key=f"reason_{sample_id}")
-
         st.markdown(f"#### {t('size_assessment', lang)}")
         with st.container(border=True):
             size_labels = [t("size_normal", lang), t("size_undersized", lang), t("size_not_assessed", lang)]
@@ -416,7 +486,7 @@ elif st.session_state.page == "New Inspection":
                 st.success(f"{t('size_recorded', lang)}: {size_labels[size_choice_idx]}")
 
     st.divider()
-    st.markdown("#### Batch Progress")
+    st.markdown(f"#### {t('batch_progress', lang)}")
     live_summary = get_batch_summary(st.session_state.current_batch)
     lc1, lc2, lc3, lc4 = st.columns(4)
     lc1.metric(t("total_samples", lang), live_summary["total_samples"])
@@ -428,11 +498,11 @@ elif st.session_state.page == "New Inspection":
 # PAGE: Batch History
 # ===========================================================================
 elif st.session_state.page == "Batch History":
-    st.markdown('<span class="agronex-badge">HISTORY</span>', unsafe_allow_html=True)
-    st.title("Batch History")
+    st.markdown(f'<span class="agronex-badge">{t("badge_history", lang)}</span>', unsafe_allow_html=True)
+    st.title(t("batch_history_title", lang))
 
     if not all_batches:
-        st.info("No batches yet.")
+        st.info(t("no_batches_short", lang))
     else:
         for b in all_batches:
             summary = get_batch_summary(b["batch_id"])
@@ -449,16 +519,53 @@ elif st.session_state.page == "Batch History":
                     f"{t('rotten', lang)}: {summary['rotten_pct']}%  ·  "
                     f"{t('human_corrections', lang)}: {summary['human_corrections']}"
                 )
-                if st.button("View / Set Active", key=f"view_{b['batch_id']}"):
+                if st.button(t("view_set_active", lang), key=f"view_{b['batch_id']}"):
                     st.session_state.current_batch = b["batch_id"]
                     st.session_state.page = "Dashboard"
                     st.rerun()
+# ===========================================================================
+# PAGE: Search
+# ===========================================================================
+elif st.session_state.page == "Search":
+    st.markdown(f'<span class="agronex-badge">{t("badge_search", lang)}</span>', unsafe_allow_html=True)
+    st.title(t("nav_search", lang))
+
+    col1, col2 = st.columns([2, 1])
+    with col1:
+        query = st.text_input(t("search_placeholder", lang))
+    with col2:
+        class_filter = st.selectbox(
+            t("search_filter_label", lang),
+            ["All", "healthy", "damaged", "rotten"],
+            format_func=lambda c: t("all_label", lang) if c == "All" else t(class_key_map[c], lang),
+        )
+
+    results = search_samples(query, class_filter)
+
+    if not results:
+        st.info(t("search_no_results", lang))
+    else:
+        st.caption(f"{len(results)} {t('search_results_count', lang)}")
+        for r in results:
+            final = (r["human_decision"] or r["ai_prediction"] or "").lower()
+            with st.container(border=True):
+                col_img, col_info = st.columns([1, 3])
+                with col_img:
+                    if r["image_path"] and os.path.isfile(r["image_path"]):
+                        st.image(r["image_path"], width=80)
+                with col_info:
+                    st.markdown(f"**{r['sample_id']}** · {r['batch_id']} · {r.get('supplier_name', '') or '-'}")
+                    conf_pct = f"{r['ai_confidence']*100:.1f}%" if r["ai_confidence"] is not None else "-"
+                    st.caption(
+                        f"{t(class_key_map.get(final, 'healthy'), lang).upper()} ({conf_pct}) · "
+                        f"{r['grade'] or '-'} · {r['timestamp'][:16] if r['timestamp'] else '-'}"
+                    )
 
 # ===========================================================================
 # PAGE: Reports
 # ===========================================================================
 elif st.session_state.page == "Reports":
-    st.markdown('<span class="agronex-badge">REPORTS</span>', unsafe_allow_html=True)
+    st.markdown(f'<span class="agronex-badge">{t("badge_reports", lang)}</span>', unsafe_allow_html=True)
     st.title(t("generate_report", lang))
 
     if not st.session_state.current_batch:
@@ -468,7 +575,11 @@ elif st.session_state.page == "Reports":
     st.caption(f"{t('active_batch', lang)}: **{st.session_state.current_batch}**")
     with st.container(border=True):
         if st.button(t("generate_pdf_btn", lang)):
-            pdf_path = generate_batch_report(st.session_state.current_batch)
+            pdf_path = generate_batch_report(
+                st.session_state.current_batch,
+                officer_name=st.session_state.logged_in_officer["name"],
+                officer_id=st.session_state.logged_in_officer["id"],
+            )
             with open(pdf_path, "rb") as f:
                 st.download_button(
                     t("download_pdf", lang),
@@ -482,7 +593,7 @@ elif st.session_state.page == "Reports":
 # PAGE: Settings
 # ===========================================================================
 elif st.session_state.page == "Settings":
-    st.markdown('<span class="agronex-badge">SETTINGS</span>', unsafe_allow_html=True)
-    st.title("Settings")
-    st.write(f"Logged in as **{st.session_state.logged_in_officer['name']}**")
-    st.write(f"Officer ID: `{st.session_state.logged_in_officer['id']}`")
+    st.markdown(f'<span class="agronex-badge">{t("badge_settings", lang)}</span>', unsafe_allow_html=True)
+    st.title(t("settings_title", lang))
+    st.write(f"{t('logged_in_as', lang)} **{st.session_state.logged_in_officer['name']}**")
+    st.write(f"{t('officer_id_colon', lang)} `{st.session_state.logged_in_officer['id']}`")
